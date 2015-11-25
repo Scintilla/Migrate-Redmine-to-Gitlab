@@ -3,7 +3,7 @@
 require 'faraday'
 require 'json'
 require 'gitlab'
-require 'config'
+require_relative 'config'
 
 module Redmine
   def self.connection
@@ -159,14 +159,14 @@ module Redmine
 end
 
 def checklabel(title)
-  if Label.find_by_title(issue.category['name']).nil?
+  if Label.find_by_title(title).nil?
     new_label = Label.new
     new_label.project_id = gl_project_id
-    new_label.title = issue.category['name']
+    new_label.title = title
     new_label.save
     new_label.title
   else
-    Label.find_by_title(issue.category['name']).title
+    Label.find_by_title(title).title
   end
 end
 
@@ -187,7 +187,7 @@ rm_projects.each do |rm_project|
       rm_issues.each do |issue|
 
         rm_user = issue.author
-        gl_user_id =  userconversion[rm_user.id]
+        gl_user_id =  UserConversion[rm_user.id]
         default = false
         if gl_user_id.nil? || gl_user_id.to_s.empty?
           messenger("not_found_user", [rm_user.firstname, rm_user.lastname])
@@ -231,17 +231,18 @@ rm_projects.each do |rm_project|
             journal['details'].each do |detail|
               detail['name']
             end
+          end
         end
-        if not (parent_changed && issue.parrent.nil?)
+        if !parent_changed && !issue.parrent.nil?
           #TODO add line to decription with parent
         end
-        if not (category_changed && issue.category.nil?)
+        if !category_changed && !issue.category.nil?
           labels << checklabel(issue.category['name'])
         end
-        if not (priority_changed && issue.priority.nil?)
+        if !priority_changed && !issue.priority.nil?
           labels << checklabel(issue.priority['name'])
         end
-        if not (tracker_changed && issue.tracker.nil?)
+        if !tracker_changed && !issue.tracker.nil?
           labels << checklabel(issue.tracker['name'])
         end
         messenger("new_labels", [labels, new_issue.id])
