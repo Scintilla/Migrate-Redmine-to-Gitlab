@@ -9,7 +9,6 @@ module Redmine
   def self.connection
     raise 'must define a Host' if Host.nil?;
     @connection ||= Faraday.new(:url => Host) do |faraday|
-      # faraday.response  :logger
       faraday.adapter   Faraday.default_adapter
     end
   end
@@ -17,9 +16,9 @@ module Redmine
   def self.testconnection
     res = connection.get("/")
     if res.status.to_s.start_with?('2', '3')
-    puts 'Connection with ' + Host + ' is established'
+      messenger("connection_true", [Host])
     else
-    puts 'Connection with ' + Host + ' failed'
+      messenger("connection_false", [Host])
     end
   end
 
@@ -29,15 +28,6 @@ module Redmine
       req.headers['X-Redmine-API-Key'] = APIKey
     end
     JSON.parse result.body
-  end
-
-  def self.put(path, attrs = {}, body = nil)
-    raise 'must define an APIKey' if APIKey.nil?
-    result = connection.put(path, attrs) do |req|
-      req.body = body
-      req.headers['Content-Type'] = 'application/json'
-      req.headers['X-Redmine-API-Key'] = APIKey
-    end
   end
 
   class Base
@@ -63,11 +53,11 @@ module Redmine
       end
     end
 
-    def self.find(id)
+    def self.find(id, options = {})
       @find ||= {}
       return @find[id] if @find[id]
 
-      response = Redmine.get "#{pluralized_resource_name}/#{id}.json"
+      response = Redmine.get "#{pluralized_resource_name}/#{id}.json", options
       obj = new
       obj.attributes = response[resource_name]
       @find[id] = obj
@@ -82,7 +72,7 @@ module Redmine
     end
   end
 
-class Project < Base
+  class Project < Base
     def issues(options = {})
       @issues = Issue.list(options.merge(:status_id => '*', :project_id => self.id, :subproject_id => '!*', :sort => 'id:asc'))
     end
@@ -168,36 +158,47 @@ class Project < Base
   end
 end
 
+def checklabel(title)
+  if Label.find_by_title(issue.category['name']).nil?
+    new_label = Label.new
+    new_label.project_id = gl_project_id
+    new_label.title = issue.category['name']
+    new_label.save
+    new_label.title
+  else
+    Label.find_by_title(issue.category['name']).title
+  end
+end
+
+Redmine.testconnection
 
 rm_projects = Redmine::Project.list
-Redmine.testconnection
+
 rm_projects.each do |rm_project|
   gl_project = Project.find_by_name(rm_project.identifier)
   if gl_project != nil
-    puts "Found Gitlab project: " + gl_project.name + " from Redmine project: " + rm_project.name
+    messenger("found_project", [gl_project.name, rm_project.name])
     
     gl_project_id = gl_project.id
-    target_type = "Issue"
-    i = 0
-    issue_nr = 0
-    while i < 10
+    issue_offset = 0
+    while issue_offset < 10
       # puts i
-      rm_issues = rm_project.issues(:offset => i, :limit => 10)
+      rm_issues = rm_project.issues(:offset => issue_offset, :limit => 10)
       rm_issues.each do |issue|
 
         rm_user = issue.author
         gl_user_id =  userconversion[rm_user.id]
         default = false
         if gl_user_id.nil? || gl_user_id.to_s.empty?
-          puts "No Gitlab user found for: " + rm_user.firstname + " " + rm_user.lastname + ", using default x-account!"
+          messenger("not_found_user", [rm_user.firstname, rm_user.lastname])
           default = true
-          creator_id = 23
+          creator_id = DefaultAccount
           #TODO add first user to description
         else
-          puts "Gitlab user: " + User.find(gl_user_id).name + " found for Redmine user: " + issue.author.firstname + " " + rm_user.lastname
+          messenger("found_user", [User.find(gl_user_id).name,  issue.author.firstname, rm_user.lastname])
           creator_id = gl_user_id
         end
-        if issue.status['name'] == "New" || issue.status['name'] == "In Progress" || issue.status['name'] == "Feedback"
+        if ["New", "In Progress", "Feedback"].include? issue.status['name']
           state = "opened"
         else
           state = "closed"
@@ -213,9 +214,9 @@ rm_projects.each do |rm_project|
         new_issue.created_at = issue.created_on     
         new_issue.updated_at = issue.updated_on     
         new_issue.description = issue.description
-        puts "Created new issue: " + new_issue.inspect
+        messenger("new_issue", new_issue.inspect)
         if new_issue.save == false
-          puts issues.errors
+          messenger("issue_errors", [issues.errors])
         end
         labels = []
         journals = issue.notes
@@ -235,47 +236,23 @@ rm_projects.each do |rm_project|
           #TODO add line to decription with parent
         end
         if not (category_changed && issue.category.nil?)
-          if Label.find_by_title(issue.category['name']).nil?
-            new_label = Label.new
-            new_label.project_id = gl_project_id
-            new_label.title = issue.category['name']
-            new_label.save
-            labels << new_label.title
-          else
-            labels << Label.find_by_title(issue.category['name']).title
-          end
+          labels << checklabel(issue.category['name'])
         end
         if not (priority_changed && issue.priority.nil?)
-          if Label.find_by_title(issue.priority['name']).nil?
-            new_label = Label.new
-            new_label.project_id = gl_project_id
-            new_label.title = issue.priority['name']
-            new_label.save
-            labels << new_label.title
-          else
-            labels << Label.find_by_title(issue.priority['name']).title
-          end
+          labels << checklabel(issue.priority['name'])
         end
         if not (tracker_changed && issue.tracker.nil?)
-          if Label.find_by_title(issue.tracker['name']).nil?
-            new_label = Label.new
-            new_label.project_id = gl_project_id
-            new_label.title = issue.tracker['name']
-            new_label.save
-            labels << new_label.title
-          else
-            labels << Label.find_by_title(issue.tracker['name']).title
-          end
+          labels << checklabel(issue.tracker['name'])
         end
-        puts "Adding labels: " + labels + " to issue " + new_issue.id
+        messenger("new_labels", [labels, new_issue.id])
         new_issue.add_labels_by_names(labels)
 
       end
       break if rm_issues.length < 100
-      i += 100
+      issue_offset += 100
     end
   else
-    puts "No Gitlab project found with the name: " + rm_project.identifier
+    messenger("not_found_project", [rm_project.identifier])
   end
 end
 
