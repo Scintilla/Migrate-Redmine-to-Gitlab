@@ -135,6 +135,11 @@ module Redmine
       @by_name ||= {}
       @by_name[name] ||= list.detect { |status| status.name == name }
     end
+
+    def self.find(id, options = {})
+      list = self.list
+      list.find {|s| s.id == id }
+    end
   end
 
   class IssueCategory < Base
@@ -167,7 +172,7 @@ def convertUser(rm_user)
     messenger("not_found_user", [rm_user.firstname, rm_user.lastname])
     gl_user = DefaultAccount
   else
-    messenger("found_user", [User.find(conv).name,  issue.author.firstname, rm_user.lastname])
+    messenger("found_user", [User.find(conv).name,  rm_user.firstname, rm_user.lastname])
     gl_user = conv
   end
 end
@@ -234,7 +239,7 @@ rm_projects.each do |rm_project|
           new_issue.assignee_id = issue.assigned_to['id']
         end
 
-        new_issue.author_id = creator_id
+        new_issue.author_id = gl_user_id
         new_issue.project_id = gl_project_id
         new_issue.created_at = issue.created_on     
         new_issue.updated_at = issue.updated_on     
