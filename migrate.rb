@@ -124,6 +124,9 @@ module Redmine
     end
   end
 
+  class Tracker < Base
+  end
+
   class IssueStatus < Base
     def self.pluralized_resource_name ; 'issue_statuses' ; end
     def self.resource_name ;            'issue_status' ; end
@@ -158,17 +161,48 @@ module Redmine
   end
 end
 
-def checklabel(title)
+def convertUser(rm_user)
+  conv =  UserConversion[rm_user.id]
+  if conv.nil? || conv.to_s.empty?
+    messenger("not_found_user", [rm_user.firstname, rm_user.lastname])
+    gl_user = DefaultAccount
+  else
+    messenger("found_user", [User.find(conv).name,  issue.author.firstname, rm_user.lastname])
+    gl_user = conv
+  end
+end
+
+def checklabel(title, id = false)
   if Label.find_by_title(title).nil?
     new_label = Label.new
     new_label.project_id = gl_project_id
     new_label.title = title
     new_label.save
-    new_label.title
+    if !id
+      new_label.title
+    else
+      new_label.id
+     end
+  elsif id
+    Label.find_by_title(title).id
   else
     Label.find_by_title(title).title
   end
 end
+
+def createNote(title, author, date, project, issue, system=true)
+  new_note = Note.new
+  new_note.note = title
+  new_note.noteable_type = TARGET_TYPE
+  new_note.author_id = author
+  new_note.created_at = date
+  new_note.updated_at = date
+  new_note.project_id = project
+  new_note.noteable_id = issue
+  new_note.system = system
+end
+
+
 
 Redmine.testconnection
 
@@ -187,17 +221,8 @@ rm_projects.each do |rm_project|
       rm_issues.each do |issue|
 
         rm_user = issue.author
-        gl_user_id =  UserConversion[rm_user.id]
-        default = false
-        if gl_user_id.nil? || gl_user_id.to_s.empty?
-          messenger("not_found_user", [rm_user.firstname, rm_user.lastname])
-          default = true
-          creator_id = DefaultAccount
-          #TODO add first user to description
-        else
-          messenger("found_user", [User.find(gl_user_id).name,  issue.author.firstname, rm_user.lastname])
-          creator_id = gl_user_id
-        end
+        gl_user_id = convertUser(rm_user)
+        #TODO add first user to description
         if ["New", "In Progress", "Feedback"].include? issue.status['name']
           state = "opened"
         else
@@ -214,25 +239,128 @@ rm_projects.each do |rm_project|
         new_issue.created_at = issue.created_on     
         new_issue.updated_at = issue.updated_on     
         new_issue.description = issue.description
-        messenger("new_issue", new_issue.inspect)
+        messenger("new_issue", new_issue.title)
         if new_issue.save == false
           messenger("issue_errors", [issues.errors])
         end
         labels = []
         journals = issue.notes
         
-        category_changed = false
         priority_changed = false
+        category_changed = false
         tracker_changed  = false
         parent_changed   = false
+        first_assignee   = true
  
         journals.each do |journal|
           if not journal['details'].empty?
+            old = []
+            new = []
             journal['details'].each do |detail|
-              detail['name']
+              if detail['property'] == "attr"
+                if detail['name'] == "status_id"
+                  if not detail['new_value'].nil?
+                    new << checklabel(Redmine::IssueStatus.find(detail['new_value'])['name'], true)
+                  end
+                  if not detail['old_value'].nil?
+                    old << checklabel(Redmine::IssueStatus.find(detail['old_value'])['name'], true)
+                  end
+                elsif detail['name'] == "priority_id"
+                  if not detail['new_value'].nil?
+                    new << checklabel(Priorities[detail['new_value']], true)
+                  end
+                  if not detail['old_value'].nil?
+                    old << checklabel(Priorities[detail['old_value']], true)
+                  end
+                elsif detail['name'] == "assigned_to_id"
+                  if not detail['new_value'].nil?
+                    user = Redmine::User.find(detail['new_value'])
+                    if convertUser(user) == DefaultAccount
+                      feature = "Reassigned to #{user.firstname} #{user.lastname} (Redmine)"
+                    else
+                      gl_user = User.find(convertUser(user))
+                      feature = "Reassigned to @#{gl_user.username}"
+                    end
+                    createNote(feature, convertUser(journal['user']), journal['created_on'], gl_project_id, new_issue.id)
+                  end
+                  if !detail['old_value'].nil? && first_assignee
+                    first_assignee = false
+                    user = Redmine::User.find(detail['old_value'])
+                    if convertUser(user) == DefaultAccount
+                      feature = "Reassigned to #{user.firstname} #{user.lastname} (Redmine)"
+                    else
+                      gl_user = User.find(convertUser(user))
+                      feature = "Reassigned to @#{gl_user.username}"
+                    end
+                    createNote(feature, convertUser(journal['user']), issue.created_on, gl_project_id, new_issue.id)
+                  end
+                elsif detail['name'] == "category_id"
+                  if not detail['new_value'].nil?
+                    new << checklabel(Redmine::IssueCategory.find(detail['new_value'])['name'], true)
+                  end
+                  if not detail['old_value'].nil?
+                    old << checklabel(Redmine::IssueCategory.find(detail['old_value'])['name'], true)
+                  end
+                elsif detail['name'] == "tracker_id"
+                  if not detail['new_value'].nil?
+                    new << checklabel(Redmine::Tracker.find(detail['new_value'])['name'], true)
+                  end
+                  if not detail['old_value'].nil?
+                    old << checklabel(Redmine::Tracker.find(detail['old_value'])['name'], true)
+                  end
+                elsif detail['name'] == "parent_id"
+                  if not detail['old_value'].nil?
+                    new_issue.description.slice! "\n\n ** Parent issue: ##{detail['old_value']}"
+                    createNote("~~ Parent issue: ##{detail['old_value']} ~~", convertUser(journal['user']), journal['created_on'], gl_project_id, new_issue.id)
+                  elsif not detail['new_value'].nil?
+                    new_issue.description << "\n\n ** Parent issue: ##{detail['new_value']}"
+                    createNote("Added Parent issue: ##{detail['new_value']} ~~", convertUser(journal['user']), journal['created_on'], gl_project_id, new_issue.id)
+                  end
+                end
+              elsif CustomFeatures.contains? detail['name']
+                if not detail['new_value'].nil?
+                  new << checklabel(detail['new_value'])
+                end
+                if not detail['old_value'].nil?
+                  old << checklabel(detail['old_value'])
+                end
+              else
+                #TODO some message
+              end
+              if !old.empty? or !new.empty?
+                if not old.empty?
+                  if not new.empty?
+                    string = "Added "
+                    new.each { |id| string << "~#{id} " }
+                    string << "and removed "
+                    old.each { |id| string << "~#{id} " }
+                    string << "labels"
+                  elsif old.length > 1
+                    string = "Removed "
+                    old.each { |id| string << "~#{id} " }
+                    string << "labels"
+                  else
+                    string = "Remove ~#{old[0]} label"
+                  end
+                elsif not new.empty?
+                  if new.length > 1
+                    string = "Added "
+                    new.each { |id| string << "~#{id} " }
+                    string << "labels"
+                  else
+                    string = "Remove ~#{new[0]} label"
+                  end
+                end
+                createNote(string, convertUser(journal['user']), journal['created_on'], gl_project_id, new_issue.id)
+              end
             end
           end
+          if not journal['notes'].empty?
+            createNote(journal['notes'], convertUser(journal['user']), journal['created_on'], gl_project_id, new_issue.id, false)
+          end
         end
+
+        #TODO add status as label
         if !parent_changed && !issue.parrent.nil?
           #TODO add line to decription with parent
         end

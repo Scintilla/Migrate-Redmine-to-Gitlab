@@ -6,7 +6,9 @@ APIKey = "someapikey"
 UserConversion = {}
 DefaultAccount = 1
 
+# Custom features in Redmine (id)
 CustomFeatures = []
+Priorities = {3 => "Low", 4 => "Normal", 5 => "High", 6 => "Urgent", 7 => "Immediate"}
 
 ### Default values ###
 TARGET_TYPE = "Issue"
