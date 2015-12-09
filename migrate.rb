@@ -186,13 +186,13 @@ def convert_user(rm_user)
     messenger('not_found_user', [rm_user.firstname, rm_user.lastname])
     gl_user = DEFAULT_ACCOUNT
   else
-    messenger('found_user', [User.find(conv).name, rm_user.firstname, rm_user.lastname])
+    messenger('found_user', [User.find(conv).name,  rm_user['name'], rm_user['id']])
     gl_user = conv
   end
   gl_user
 end
 
-def check_label(title, id = false)
+def check_label(title, gl_project_id, id = false)
   if Label.find_by_title(title).nil?
     new_label = Label.new
     new_label.project_id = gl_project_id
@@ -281,17 +281,17 @@ rm_projects.each do |rm_project|
               if detail['property'] == 'attr'
                 if detail['name'] == 'status_id'
                   unless detail['new_value'].nil?
-                    new << check_label(Redmine::IssueStatus.find(detail['new_value'])['name'], true)
+                    new << check_label(Redmine::IssueStatus.find(detail['new_value'])['name'], gl_project_id, true)
                   end
                   unless detail['old_value'].nil?
-                    old << check_label(Redmine::IssueStatus.find(detail['old_value'])['name'], true)
+                    old << check_label(Redmine::IssueStatus.find(detail['old_value'])['name'], gl_project_id, true)
                   end
                 elsif detail['name'] == 'priority_id'
                   unless detail['new_value'].nil?
-                    new << check_label(PRIORITIES[detail['new_value']], true)
+                    new << check_label(PRIORITIES[detail['new_value']], gl_project_id, true)
                   end
                   unless detail['old_value'].nil?
-                    old << check_label(PRIORITIES[detail['old_value']], true)
+                    old << check_label(PRIORITIES[detail['old_value']], gl_project_id, true)
                   end
                 elsif detail['name'] == 'assigned_to_id'
                   unless detail['new_value'].nil?
@@ -317,17 +317,17 @@ rm_projects.each do |rm_project|
                   end
                 elsif detail['name'] == 'category_id'
                   unless detail['new_value'].nil?
-                    new << check_label(Redmine::IssueCategory.find(detail['new_value'])['name'], true)
+                    new << check_label(Redmine::IssueCategory.find(detail['new_value'])['name'], gl_project_id, true)
                   end
                   unless detail['old_value'].nil?
-                    old << check_label(Redmine::IssueCategory.find(detail['old_value'])['name'], true)
+                    old << check_label(Redmine::IssueCategory.find(detail['old_value'])['name'], gl_project_id, true)
                   end
                 elsif detail['name'] == 'tracker_id'
                   unless detail['new_value'].nil?
-                    new << check_label(Redmine::Tracker.find(detail['new_value'])['name'], true)
+                    new << check_label(Redmine::Tracker.find(detail['new_value'])['name'], gl_project_id, true)
                   end
                   unless detail['old_value'].nil?
-                    old << check_label(Redmine::Tracker.find(detail['old_value'])['name'], true)
+                    old << check_label(Redmine::Tracker.find(detail['old_value'])['name'], gl_project_id, true)
                   end
                 elsif detail['name'] == 'parent_id'
                   if not detail['old_value'].nil?
@@ -340,10 +340,10 @@ rm_projects.each do |rm_project|
                 end
               elsif CUSTOM_FEATURES.include? detail['name']
                 unless detail['new_value'].nil?
-                  new << check_label(detail['new_value'])
+                  new << check_label(detail['new_value'], gl_project_id)
                 end
                 unless detail['old_value'].nil?
-                  old << check_label(detail['old_value'])
+                  old << check_label(detail['old_value'], gl_project_id)
                 end
               else
                 #TODO some message
@@ -386,13 +386,13 @@ rm_projects.each do |rm_project|
           # TODO add line to description with parent
         end
         if !category_changed && !issue.category.nil?
-          labels << check_label(issue.category['name'])
+          labels << check_label(issue.category['name'], gl_project_id)
         end
         if !priority_changed && !issue.priority.nil?
-          labels << check_label(issue.priority['name'])
+          labels << check_label(issue.priority['name'], gl_project_id)
         end
         if !tracker_changed && !issue.tracker.nil?
-          labels << check_label(issue.tracker['name'])
+          labels << check_label(issue.tracker['name'], gl_project_id)
         end
         messenger('new_labels', [labels, new_issue.id])
         new_issue.add_labels_by_names(labels)

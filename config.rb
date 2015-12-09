@@ -30,7 +30,7 @@ def messenger(location, args)
               when 'not_found_project' then
                 [DEBUG_WARNING, "No Gitlab project found with the name: #{args[0]}"]
               when 'found_user' then
-                [DEBUG_DEBUG, "Gitlab user: #{args[0]} found for Redmine user: #{args[1]} #{args[2]}"]
+                [DEBUG_DEBUG, "Gitlab user: #{args[0]} found for Redmine user: #{args[1]} (#{args[2]})"]
               when 'not_found_user' then
                 [DEBUG_WARNING, "No Gitlab user found for: #{args[0]} #{args[1]}, using default account!"]
               when 'new_issue' then
