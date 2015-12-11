@@ -120,10 +120,6 @@ module Redmine
       Redmine::User.find self.attributes['assigned_to']['id'] rescue nil
     end
 
-    def notes
-      @journals ||= Issue.find(self.id, include: 'journals').journals
-    end
-
     def children
       @children ||= Issue.find(self.id, include: 'children').children
     end
@@ -138,6 +134,10 @@ module Redmine
 
     def changesets
       @changesets ||= Issue.find(self.id, include: 'changesets').changesets
+    end
+
+    def journals
+      @journals ||= Issue.find(self.id, include: 'journals').journals
     end
   end
 
@@ -331,7 +331,7 @@ rm_projects.each do |rm_project|
     messenger('progress', ['---\n\nAll issues progressed, adding additional data:\n\n'])
     gl_issues.each do |rm_issue, gl_issue|
       labels = []
-      journals = rm_issue.notes
+      journals = rm_issue.journals
 
       status_changed = false
       priority_changed = false
@@ -480,6 +480,41 @@ rm_projects.each do |rm_project|
       end
       messenger('new_labels', [labels, gl_issue.id])
       gl_issue.add_labels_by_names(labels)
+
+      children = rm_issue.children
+      if children
+        description = gl_issue.description || ''
+        description += "\n\n #### Subtasks"
+        description += "\n\n |    id    |   title  |   state  |"
+        description += "\n\n | -------- | -------- | -------- |"
+        children.each do |child|
+          child_gl_issue = Issue.find(rm_issue_conv[Integer(issue['id'])])
+          description += "\n\n | ##{child_gl_issue.iid} | #{child_gl_issue.title} | #{child_gl_issue.state} |"
+          gl_issue.description = description
+        end
+      end
+      attachments = rm_issue.attachments
+      attachments.each do |attachment|
+
+      end
+      relations = rm_issue.relations
+      if relations
+        description = gl_issue.description || ''
+        description += "\n\n #### Related issues"
+        description += "\n\n |    id    |   title  |   state  |"
+        description += "\n\n | -------- | -------- | -------- |"
+        relations.each do |relation|
+          rel_gl_issue = Issue.find(rm_issue_conv[Integer(relation['issue_id'])])
+          description += "\n\n | ##{rel_gl_issue.iid} | #{rel_gl_issue.title} | #{rel_gl_issue.state} |"
+          gl_issue.description = description
+        end
+      end
+      changesets = rm_issue.changesets
+      changesets.each do |changeset|
+        string = "mentioned in commit #{changeset['revision']}"
+        create_note(string, convert_user(changeset['user']), changeset['committed_on'], gl_project_id, gl_issue.id)
+      end
+
       gl_issue.updated_at = rm_issue.updated_on
 
       unless gl_issue.save
