@@ -15,7 +15,7 @@ gitlab-rails runner /path/to/repo/clone/migrate.rb -e production
 ```
 
 ## Versions
-* Redmine version >=1.4 & < 2.0
+* Redmine version >=1.4
 * GitLab Community Edition 8.0.4 1ff385d
 * Ubuntu 14.04
 
@@ -23,3 +23,4 @@ gitlab-rails runner /path/to/repo/clone/migrate.rb -e production
 * Not editing `USER_CONVERSION` and `DEFAULT_ACCOUNT`, will result in all issues and comments to be linked to the root account of gitlab.
 * Redmine can have custome features, if you want to add those to gitlab as labels add their id to `CUSTOM_FEATURES`.
 * If your Redmine has custom piorities or statuses add them to the correct lists (`PRIORITIES`, `OPEN_VALUES` and `CLOSED_VALUES`).
+* Script version 2.0
