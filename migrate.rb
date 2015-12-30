@@ -54,7 +54,7 @@ module Redmine
     end
 
     def self.find(id, options = {})
-      @find ||= {}
+      @find = {}
       return @find[id] if @find[id]
 
       response = Redmine.get "#{pluralized_resource_name}/#{id}.json", options
@@ -120,24 +120,24 @@ module Redmine
       Redmine::User.find self.attributes['assigned_to']['id'] rescue nil
     end
 
-    def children
-      @children ||= Issue.find(self.id, include: 'children').children
+    def ls_children
+      Issue.find(self.id, include: 'children').children
     end
 
-    def attachments
-      @attachments ||= Issue.find(self.id, include: 'attachments').attachments
+    def ls_attachments
+      Issue.find(self.id, include: 'attachments').attachments
     end
 
-    def relations
-      @relations ||= Issue.find(self.id, include: 'relations').relations
+    def ls_relations
+      Issue.find(self.id, include: 'relations').relations
     end
 
-    def changesets
-      @changesets ||= Issue.find(self.id, include: 'changesets').changesets
+    def ls_changesets
+      Issue.find(self.id, include: 'changesets').changesets
     end
 
-    def journals
-      @journals ||= Issue.find(self.id, include: 'journals').journals
+    def ls_journals
+      Issue.find(self.id, include: 'journals').journals
     end
   end
 
@@ -224,12 +224,15 @@ def convert_user(rm_user)
   gl_user
 end
 
-def check_label(title, gl_project_id, id = false)
+def check_label(title, gl_project_id, id = false, color = nil)
   label = Label.find_by_title(title)
   if label.nil?
     new_label = Label.new
     new_label.project_id = gl_project_id
     new_label.title = title
+    if color
+      new_label.color = color
+    end
     new_label.save
     if !id
       new_label.title
@@ -243,7 +246,7 @@ def check_label(title, gl_project_id, id = false)
   end
 end
 
-def create_note(title, author, date, project, issue, system=true)
+def create_note(title, author, date, project, issue, system=true, event=false)
   new_note = Note.new
   new_note.note = title
   new_note.noteable_type = TARGET_TYPE
@@ -254,6 +257,23 @@ def create_note(title, author, date, project, issue, system=true)
   new_note.noteable_id = issue
   new_note.system = system
   new_note.save
+  if event
+    create_event(new_note, author, Event::COMMENTED, date)
+  end
+end
+
+def create_event(record, user_id, status, date, attributes = {})
+  attributes.merge!(
+      project: record.project,
+      action: status,
+      author_id: user_id,
+      created_at: date,
+      updated_at: date,
+      target_id: record.id,
+      target_type: record.class.name
+  )
+
+  Event.create(attributes)
 end
 
 Redmine.test_connection
@@ -270,19 +290,21 @@ rm_projects.each do |rm_project|
   gl_project = Project.find_by_name(rm_project.identifier)
   if gl_project != nil
     messenger('found_project', [gl_project.name, rm_project.name])
-
+    messenger('progress', ["--- Starting processing #{rm_project.identifier} (step 1 of 2)"])
     gl_project_id = gl_project.id
     issue_offset = 0
     while true
-      messenger('progress', ["#{issue_offset} issues processed"])
       rm_issues = rm_project.issues(:offset => issue_offset, :limit => 100)
       rm_issues.each do |issue|
+        if issue_offset % 20 == 0
+          messenger('progress', ["#{issue_offset} issues processed"])
+        end
+        issue_offset += 1
 
         rm_user = issue.author
         gl_user_id = convert_user(rm_user)
 
-
-        if ['New', 'In Progress', 'Feedback', 'Resolved'].include? issue.status['name']
+        if OPEN_VALUES.include? issue.status['name']
           state = 'opened'
         else
           state = 'closed'
@@ -296,6 +318,7 @@ rm_projects.each do |rm_project|
         new_issue.created_at = issue.created_on
 
         description = issue.description
+        description.gsub! '\r\n', '\n\n'
         if gl_user_id == DEFAULT_ACCOUNT
           description += "\n\n *Originally created by #{rm_user.firstname} #{rm_user.lastname} (Redmine)*"
         end
@@ -313,36 +336,38 @@ rm_projects.each do |rm_project|
         unless new_issue.save
           messenger('issue_errors', [new_issue.errors.inspect])
         end
+
+        create_event(new_issue, gl_user_id, Event::CREATED, new_issue.created_at)
+
         if first_issue
           first_issue = false
           first_issue_iid = new_issue.iid - 1
         end
-        rm_issue_conv[issue.id] = new_issue.iid
+        rm_issue_conv[issue.id] = new_issue
         gl_issues[issue] = new_issue
 
       end
       if rm_issues.length < 100
-        nr_of_issues = issue_offset + rm_issues.length
-        puts "#{nr_of_issues} issues processed"
+        nr_of_issues = issue_offset
+        messenger('progress', ["#{nr_of_issues} issues processed"])
         break
       end
-      issue_offset += 100
     end
-    messenger('progress', ['---\n\nAll issues progressed, adding additional data:\n\n'])
+    messenger('progress', ['--- All issues processed, adding additional data (step 2 of 2):'])
     gl_issues.each do |rm_issue, gl_issue|
+      done = (gl_issue.iid - first_issue_iid).to_f / nr_of_issues.to_f * 100.0
+      if done % 5 < 0.1
+        messenger('progress', ["#{done.round}% done"])
+      end
       labels = []
-      journals = rm_issue.journals
+      journals = rm_issue.ls_journals
 
-      status_changed = false
-      priority_changed = false
-      category_changed = false
-      tracker_changed = false
       parent_changed = false
       first_assignee = true
 
       journals.each do |journal|
         if !journal['notes'].nil? && !journal['notes'].empty?
-          create_note(journal['notes'], convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id, false)
+          create_note(journal['notes'], convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id, false, true)
         end
         unless journal['details'].empty?
           old = []
@@ -350,15 +375,18 @@ rm_projects.each do |rm_project|
           journal['details'].each do |detail|
             if detail['property'] == 'attr'
               if detail['name'] == 'status_id'
-                status_changed = true
                 if detail['new_value']
                   new << check_label('Status: ' + Redmine::IssueStatus.find(detail['new_value']).name, gl_project_id, true)
                 end
                 if detail['old_value']
                   old << check_label('Status: ' + Redmine::IssueStatus.find(detail['old_value']).name, gl_project_id, true)
                 end
+                if CLOSED_VALUES.include? detail['new_value'] and OPEN_VALUES.include? detail['old_value']
+                  create_event(gl_issue, convert_user(journal['user']), Event::CLOSED, journal['created_on'])
+                elsif OPEN_VALUES.include? detail['new_value'] and CLOSED_VALUES.include? detail['old_value']
+                  create_event(gl_issue, convert_user(journal['user']), Event::REOPENED, journal['created_on'])
+                end
               elsif detail['name'] == 'priority_id'
-                priority_changed = true
                 if detail['new_value']
                   new << check_label('Priority: ' + PRIORITIES[Integer(detail['new_value'])], gl_project_id, true)
                 end
@@ -388,12 +416,11 @@ rm_projects.each do |rm_project|
                   create_note(feature, convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id)
                 end
               elsif detail['name'] == 'category_id'
-                category_changed = true
                 if detail['new_value']
-                  new << check_label(Redmine::IssueCategory.find(detail['new_value']).name, gl_project_id, true)
+                  new << check_label(Redmine::IssueCategory.find(detail['new_value']).name, gl_project_id, true, '#12AD2B')
                 end
                 if detail['old_value']
-                  old << check_label(Redmine::IssueCategory.find(detail['old_value']).name, gl_project_id, true)
+                  old << check_label(Redmine::IssueCategory.find(detail['old_value']).name, gl_project_id, true, '#12AD2B')
                 end
               elsif detail['name'] == 'tracker_id'
                 tracker_changed = true
@@ -407,18 +434,20 @@ rm_projects.each do |rm_project|
                 parent_changed = true
                 description = gl_issue.description || ''
                 if !detail['old_value'].nil?
-                  description.slice! "\n\n **Parent issue: ##{rm_issue_conv[Integer(detail['old_value'])]}**"
+                  description.slice! "\n\n **Parent issue: ##{rm_issue_conv[Integer(detail['old_value'])].iid}**"
                   if !detail['new_value'].nil?
-                    description += "\n\n **Parent issue: ##{rm_issue_conv[Integer(detail['new_value'])]}**"
-                    create_note("Changed parent issue from ##{rm_issue_conv[Integer(detail['old_value'])]} to ##{rm_issue_conv[Integer(detail['new_value'])]}", convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id)
+                    description += "\n\n **Parent issue: ##{rm_issue_conv[Integer(detail['new_value'])].iid}**"
+                    create_note("Changed parent issue from ##{rm_issue_conv[Integer(detail['old_value'])].iid} to ##{rm_issue_conv[Integer(detail['new_value'])].iid}", convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id)
                   else
-                    create_note("Parent issue ##{rm_issue_conv[Integer(detail['old_value'])]} removed", convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id)
+                    create_note("Parent issue ##{rm_issue_conv[Integer(detail['old_value'])].iid} removed", convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id)
                   end
                 elsif !detail['new_value'].nil?
-                  description += "\n\n **Parent issue: ##{rm_issue_conv[Integer(detail['new_value'])]}**"
-                  create_note("Added parent issue ##{rm_issue_conv[Integer(detail['new_value'])]}", convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id)
+                  description += "\n\n **Parent issue: ##{rm_issue_conv[Integer(detail['new_value'])].iid}**"
+                  create_note("Added parent issue ##{rm_issue_conv[Integer(detail['new_value'])].iid}", convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id)
                 end
                 gl_issue.description = description
+              else
+                messenger('journal_not_found', [detail['name']])
               end
             elsif CUSTOM_FEATURES.include? detail['name']
               if detail['new_value']
@@ -428,7 +457,7 @@ rm_projects.each do |rm_project|
                 old << check_label(detail['old_value'], gl_project_id, true)
               end
             else
-              #TODO some message
+              messenger('journal_not_found', [journal.inspect])
             end
           end
 
@@ -461,58 +490,71 @@ rm_projects.each do |rm_project|
         end
       end
 
-      if !status_changed && !rm_issue.status.nil?
+      unless rm_issue.status.nil?
         labels << check_label('Status: ' + Redmine::IssueStatus.find(rm_issue.status['id']).name, gl_project_id)
       end
-      if !priority_changed && !rm_issue.priority.nil?
+      unless rm_issue.priority.nil?
         labels << check_label('Priority: ' + rm_issue.priority['name'], gl_project_id)
       end
-      if !category_changed && !rm_issue.category.nil?
-        labels << check_label(rm_issue.category['name'], gl_project_id)
+      unless rm_issue.category.nil?
+        labels << check_label(rm_issue.category['name'], gl_project_id, false, '#12AD2B')
       end
-      if !tracker_changed && !rm_issue.tracker.nil?
+      unless rm_issue.tracker.nil?
         labels << check_label(rm_issue.tracker['name'], gl_project_id)
       end
-      if !parent_changed && !rm_issue.parrent.nil?
+      if !parent_changed && !rm_issue.parent.nil?
         description = gl_issue.description || ''
-        description += "\n\n **Parent issue: ##{rm_issue_conv[Integer(rm_issue.parrent['id'])]}**"
+        description += "\n\n **Parent issue: ##{rm_issue_conv[Integer(rm_issue.parent['id'])].iid}**"
         gl_issue.description = description
       end
       messenger('new_labels', [labels, gl_issue.id])
       gl_issue.add_labels_by_names(labels)
 
-      children = rm_issue.children
+      children = rm_issue.ls_children
       if children
         description = gl_issue.description || ''
-        description += "\n\n #### Subtasks"
-        description += "\n\n |    id    |   title  |   state  |"
-        description += "\n\n | -------- | -------- | -------- |"
+        description += "\n#### Subtasks\n"
+        description += "\n|    id    |   title  |   state  |"
+        description += "\n| -------- | -------- | -------- |"
         children.each do |child|
-          child_gl_issue = Issue.find(rm_issue_conv[Integer(issue['id'])])
-          description += "\n\n | ##{child_gl_issue.iid} | #{child_gl_issue.title} | #{child_gl_issue.state} |"
+          child_gl_issue = Issue.find(rm_issue_conv[Integer(child['id'])].id)
+          description += "\n| ##{child_gl_issue.iid} | #{child_gl_issue.title} | #{child_gl_issue.state} |"
           gl_issue.description = description
         end
       end
-      attachments = rm_issue.attachments
-      attachments.each do |attachment|
 
+      attachments = rm_issue.ls_attachments
+      if attachments
+        attachments.each do |attachment|
+          uri = URI.parse(attachment['content_url'])
+          filename = File.basename(uri.path)
+          local_path = '/var/opt/gitlab/gitlab-rails/uploads/'
+          project_path = User.find(gl_project.creator_id).name.downcase+'/'+gl_project.path
+          IO.copy_stream(open('https://dev.snt.utwente.nl'+uri.path+'?key='+API_KEY), local_path+project_path+'/'+HASH+'/'+filename)
+          url = 'http://' + Gitlab.config.gitlab.host + ':' + Gitlab.config.gitlab.port.to_s + '/' + project_path + "/uploads/#{HASH}/"+ filename
+          create_note("[#{filename}](#{url})", convert_user(attachment['author']), attachment['created_on'], gl_project_id, gl_issue.id, true, true)
+        end
       end
-      relations = rm_issue.relations
+
+      relations = rm_issue.ls_relations
       if relations
         description = gl_issue.description || ''
-        description += "\n\n #### Related issues"
-        description += "\n\n |    id    |   title  |   state  |"
-        description += "\n\n | -------- | -------- | -------- |"
+        description += "\n\n#### Related issues"
+        description += "\n|    id    |   title  |   state  |"
+        description += "\n| -------- | -------- | -------- |"
         relations.each do |relation|
-          rel_gl_issue = Issue.find(rm_issue_conv[Integer(relation['issue_id'])])
-          description += "\n\n | ##{rel_gl_issue.iid} | #{rel_gl_issue.title} | #{rel_gl_issue.state} |"
+          rel_gl_issue = Issue.find(rm_issue_conv[Integer(relation['issue_id'])].id)
+          description += "\n| ##{rel_gl_issue.iid} | #{rel_gl_issue.title} | #{rel_gl_issue.state} |"
           gl_issue.description = description
         end
       end
-      changesets = rm_issue.changesets
-      changesets.each do |changeset|
-        string = "mentioned in commit #{changeset['revision']}"
-        create_note(string, convert_user(changeset['user']), changeset['committed_on'], gl_project_id, gl_issue.id)
+
+      changesets = rm_issue.ls_changesets
+      if changesets
+        changesets.each do |changeset|
+          string = "mentioned in commit #{changeset['revision']}"
+          create_note(string, convert_user(changeset['user']), changeset['committed_on'], gl_project_id, gl_issue.id)
+        end
       end
 
       gl_issue.updated_at = rm_issue.updated_on
@@ -520,13 +562,8 @@ rm_projects.each do |rm_project|
       unless gl_issue.save
         messenger('issue_errors', [gl_issue.errors.inspect])
       end
-
-      done = (gl_issue.iid - first_issue_iid).to_f / nr_of_issues.to_f * 100.0
-      if done % 5 < 0.1
-        messenger('progress', ["#{done.round}% done"])
-      end
     end
-    messenger('progress', ["#{rm_project.identifier} done"])
+    messenger('progress', ["--- #{rm_project.identifier} done"])
   else
     messenger('not_found_project', [rm_project.identifier])
   end

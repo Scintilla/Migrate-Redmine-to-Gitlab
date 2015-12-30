@@ -8,14 +8,17 @@ DEFAULT_ACCOUNT = 1
 
 # Custom features in Redmine (id)
 CUSTOM_FEATURES = []
-PRIORITIES = {3 => 'Low', 4 => 'Normal', 5 => 'High', 6 => 'Urgent', 7 => 'Immediate'}
 
 ### Default values ###
+HASH = 'redmine'
 TARGET_TYPE = 'Issue'
 DEBUG_ERROR = 4
 DEBUG_WARNING = 3
 DEBUG_STATUS = 2
 DEBUG_DEBUG = 1
+PRIORITIES = {3 => 'Low', 4 => 'Normal', 5 => 'High', 6 => 'Urgent', 7 => 'Immediate'}
+OPEN_VALUES = ['New', 'In Progress', 'Feedback', 'Resolved']
+CLOSED_VALUES = ['Closed', 'Rejected']
 
 ### Debug ###
 DEBUG_STATE = DEBUG_DEBUG
@@ -42,6 +45,8 @@ def messenger(location, args)
                 [DEBUG_DEBUG, "Adding labels: #{args[0]} to issue #{args[1]}"]
               when 'progress' then
                 [DEBUG_STATUS, "#{args[0]}"]
+              when 'journal_not_found' then
+                [DEBUG_DEBUG, "Journal (#{args[0]}), was not transferred"]
               else
                 [DEBUG_ERROR, "Error no message found for: #{location}, with args: #{args}"]
             end
