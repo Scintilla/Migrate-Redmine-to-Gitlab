@@ -277,17 +277,27 @@ def create_event(record, user_id, status, date, attributes = {})
 end
 
 Redmine.test_connection
+if PROJECT_CONVERSION.empty?
+  rm_projects = Redmine::Project.list
+else
+  rm_projects = PROJECT_CONVERSION
+end
 
-rm_projects = Redmine::Project.list
-
-rm_projects.each do |rm_project|
+rm_projects.each do |rm_p|
   # Redmine issue => gitlab issue
+  if PROJECT_CONVERSION.empty?
+    rm_project = rm_p
+    gl_project = Project.find_by_name(rm_project.identifier)
+  else
+    rm_project = Redmine::Project.by_identifier(rm_p[0])
+    gl_project = Project.find_by_name(rm_p[1])
+  end
+
   rm_issue_conv = {}
   gl_issues = {}
   nr_of_issues = 0
   first_issue = true
   first_issue_iid = 0
-  gl_project = Project.find_by_name(rm_project.identifier)
   if gl_project != nil
     messenger('found_project', [gl_project.name, rm_project.name])
     messenger('progress', ["--- Starting processing #{rm_project.identifier} (step 1 of 2)"])
@@ -309,6 +319,7 @@ rm_projects.each do |rm_project|
         else
           state = 'closed'
         end
+        issue.inspect
         new_issue = Issue.new
         new_issue.title = issue.subject
         new_issue.state = state
@@ -319,6 +330,8 @@ rm_projects.each do |rm_project|
 
         description = issue.description
         description.gsub! '\r\n', '\n\n'
+        description.gsub! '<pre>', '```'
+        description.gsub! '</pre>', '```'
         if gl_user_id == DEFAULT_ACCOUNT
           description += "\n\n *Originally created by #{rm_user.firstname} #{rm_user.lastname} (Redmine)*"
         end
@@ -366,8 +379,19 @@ rm_projects.each do |rm_project|
       first_assignee = true
 
       journals.each do |journal|
+        redmine_text = ''
+        if convert_user(journal['user']) == DEFAULT_ACCOUNT
+          redmine_text = "*#{journal['user']['name']} (Redmine)*/n/n"
+        end
         if !journal['notes'].nil? && !journal['notes'].empty?
-          create_note(journal['notes'], convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id, false, true)
+          note = journal['notes']
+          if note.include? 'Applied in changeset commit:'
+            note.slice! 'commit:'
+          end
+          note.gsub! '\r\n', '\n\n'
+          note.gsub! '<pre>', '```'
+          note.gsub! '</pre>', '```'
+          create_note(redmine_text+note, convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id, false, true)
         end
         unless journal['details'].empty?
           old = []
@@ -394,16 +418,20 @@ rm_projects.each do |rm_project|
                   old << check_label('Priority: ' + PRIORITIES[Integer(detail['old_value'])], gl_project_id, true)
                 end
               elsif detail['name'] == 'assigned_to_id'
-                if !detail['old_value'].nil? && first_assignee
-                  first_assignee = false
-                  user = Redmine::User.find(detail['old_value'])
-                  if convert_user(user) == DEFAULT_ACCOUNT
-                    feature = "Reassigned to #{user.firstname} #{user.lastname} (Redmine)"
-                  else
-                    gl_user = User.find(convert_user(user))
-                    feature = "Reassigned to @#{gl_user.username}"
+                if detail['old_value']
+                  if first_assignee
+                    user = Redmine::User.find(detail['old_value'])
+                    if convert_user(user) == DEFAULT_ACCOUNT
+                      feature = "Reassigned to #{user.firstname} #{user.lastname} (Redmine)"
+                    else
+                      gl_user = User.find(convert_user(user))
+                      feature = "Reassigned to @#{gl_user.username}"
+                    end
+                    create_note(feature, convert_user(journal['user']), rm_issue.created_on, gl_project_id, gl_issue.id)
+                  elsif detail['new_value'].nil?
+                    feature = 'Assignee removed'
+                    create_note(feature, convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id)
                   end
-                  create_note(feature, convert_user(journal['user']), rm_issue.created_on, gl_project_id, gl_issue.id)
                 end
                 if detail['new_value']
                   user = Redmine::User.find(detail['new_value'])
@@ -415,6 +443,7 @@ rm_projects.each do |rm_project|
                   end
                   create_note(feature, convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id)
                 end
+                first_assignee = false
               elsif detail['name'] == 'category_id'
                 if detail['new_value']
                   new << check_label(Redmine::IssueCategory.find(detail['new_value']).name, gl_project_id, true, '#12AD2B')
@@ -437,19 +466,19 @@ rm_projects.each do |rm_project|
                   description.slice! "\n\n **Parent issue: ##{rm_issue_conv[Integer(detail['old_value'])].iid}**"
                   if !detail['new_value'].nil?
                     description += "\n\n **Parent issue: ##{rm_issue_conv[Integer(detail['new_value'])].iid}**"
-                    create_note("Changed parent issue from ##{rm_issue_conv[Integer(detail['old_value'])].iid} to ##{rm_issue_conv[Integer(detail['new_value'])].iid}", convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id)
+                    create_note("#{redmine_text}Changed parent issue from ##{rm_issue_conv[Integer(detail['old_value'])].iid} to ##{rm_issue_conv[Integer(detail['new_value'])].iid}", convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id)
                   else
-                    create_note("Parent issue ##{rm_issue_conv[Integer(detail['old_value'])].iid} removed", convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id)
+                    create_note("#{redmine_text}Parent issue ##{rm_issue_conv[Integer(detail['old_value'])].iid} removed", convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id)
                   end
                 elsif !detail['new_value'].nil?
                   description += "\n\n **Parent issue: ##{rm_issue_conv[Integer(detail['new_value'])].iid}**"
-                  create_note("Added parent issue ##{rm_issue_conv[Integer(detail['new_value'])].iid}", convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id)
+                  create_note("#{redmine_text}Added parent issue ##{rm_issue_conv[Integer(detail['new_value'])].iid}", convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id)
                 end
                 gl_issue.description = description
               else
                 messenger('journal_not_found', [detail['name']])
               end
-            elsif CUSTOM_FEATURES.include? detail['name']
+            elsif CUSTOM_FEATURES.include? Integer(detail['name'])
               if detail['new_value']
                 new << check_label(detail['new_value'], gl_project_id, true)
               end
@@ -474,7 +503,7 @@ rm_projects.each do |rm_project|
                 old.each { |id| string << "~#{id} " }
                 string << 'labels'
               else
-                string = "Remove ~#{old[0]} label"
+                string = "Removed ~#{old[0]} label"
               end
             else
               if new.length > 1
@@ -482,10 +511,10 @@ rm_projects.each do |rm_project|
                 new.each { |id| string << "~#{id} " }
                 string << 'labels'
               else
-                string = "Remove ~#{new[0]} label"
+                string = "Added ~#{new[0]} label"
               end
             end
-            create_note(string, convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id)
+            create_note(redmine_text+string, convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id)
           end
         end
       end
@@ -494,10 +523,23 @@ rm_projects.each do |rm_project|
         labels << check_label('Status: ' + Redmine::IssueStatus.find(rm_issue.status['id']).name, gl_project_id)
       end
       unless rm_issue.priority.nil?
-        labels << check_label('Priority: ' + rm_issue.priority['name'], gl_project_id)
+        unless rm_issue.priority['name'].nil?
+          labels << check_label('Priority: ' + rm_issue.priority['name'], gl_project_id)
+        end
       end
       unless rm_issue.category.nil?
-        labels << check_label(rm_issue.category['name'], gl_project_id, false, '#12AD2B')
+        unless rm_issue.category['name'].nil?
+          labels << check_label(rm_issue.category['name'], gl_project_id, false, '#12AD2B')
+        end
+      end
+      unless rm_issue.custom_fields.nil?
+        rm_issue.custom_fields.each do | cf |
+          if CUSTOM_FEATURES.include? Integer(cf['id'])
+            if not cf['value'].nil? and not cf['value'].empty?
+              labels << check_label(cf['value'], gl_project_id, false)
+            end
+          end
+        end
       end
       unless rm_issue.tracker.nil?
         labels << check_label(rm_issue.tracker['name'], gl_project_id)
@@ -531,8 +573,13 @@ rm_projects.each do |rm_project|
           local_path = '/var/opt/gitlab/gitlab-rails/uploads/'
           project_path = User.find(gl_project.creator_id).name.downcase+'/'+gl_project.path
           IO.copy_stream(open('https://dev.snt.utwente.nl'+uri.path+'?key='+API_KEY), local_path+project_path+'/'+HASH+'/'+filename)
+          filename.gsub! '%20', '_'
           url = 'http://' + Gitlab.config.gitlab.host + ':' + Gitlab.config.gitlab.port.to_s + '/' + project_path + "/uploads/#{HASH}/"+ filename
-          create_note("[#{filename}](#{url})", convert_user(attachment['author']), attachment['created_on'], gl_project_id, gl_issue.id, true, true)
+          redmine_text = ''
+          if convert_user(attachment['author']) == DEFAULT_ACCOUNT
+            redmine_text = "*#{attachment['author']['name']} (Redmine)*/n/n"
+          end
+          create_note("#{redmine_text}[#{filename}](#{url})", convert_user(attachment['author']), attachment['created_on'], gl_project_id, gl_issue.id, true, true)
         end
       end
 
@@ -552,7 +599,11 @@ rm_projects.each do |rm_project|
       changesets = rm_issue.ls_changesets
       if changesets
         changesets.each do |changeset|
-          string = "mentioned in commit #{changeset['revision']}"
+          redmine_text = ''
+          if convert_user(changeset['user']) == DEFAULT_ACCOUNT
+            redmine_text = "*#{changeset['user']['name']} (Redmine)*/n/n"
+          end
+          string = "#{redmine_text}mentioned in commit #{changeset['revision']}"
           create_note(string, convert_user(changeset['user']), changeset['committed_on'], gl_project_id, gl_issue.id)
         end
       end
@@ -565,7 +616,11 @@ rm_projects.each do |rm_project|
     end
     messenger('progress', ["--- #{rm_project.identifier} done"])
   else
-    messenger('not_found_project', [rm_project.identifier])
+    if PROJECT_CONVERSION.empty?
+      messenger('not_found_project', [rm_project.identifier])
+    else
+      messenger('not_found_project', [rm_project])
+    end
   end
 end
 

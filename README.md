@@ -21,6 +21,8 @@ gitlab-rails runner /path/to/repo/clone/migrate.rb -e production
 
 ## Notes
 * Not editing `USER_CONVERSION` and `DEFAULT_ACCOUNT`, will result in all issues and comments to be linked to the root account of gitlab.
-* Redmine can have custome features, if you want to add those to gitlab as labels add their id to `CUSTOM_FEATURES`.
-* If your Redmine has custom piorities or statuses add them to the correct lists (`PRIORITIES`, `OPEN_VALUES` and `CLOSED_VALUES`).
-* Script version 2.0
+* When issues and comments are linked to the `DEFAULT_ACCOUNT`, the original Redmine user will be mentioned.
+* For a cleaner result the `DEFAULT_ACCOUNT` should not be in the list of `USER_CONVERSION`.
+* Redmine can have custom features, if you want to add those to gitlab as labels add their id to `CUSTOM_FEATURES`.
+* If your Redmine has custom priorities or statuses add them to the correct lists (`PRIORITIES`, `OPEN_VALUES` and `CLOSED_VALUES`).
+* Script version 2.1

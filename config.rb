@@ -38,9 +38,9 @@ def messenger(location, args)
               when 'not_found_user' then
                 [DEBUG_WARNING, "No Gitlab user found for: #{args[0]} (#{args[1]}), using default account!"]
               when 'new_issue' then
-                [DEBUG_DEBUG, "Created new issue: #{args[0]}"]
+                [DEBUG_DEBUG, "Created new issue: #{args}"]
               when 'issue_errors' then
-                [DEBUG_ERROR, "#{args[0]}"]
+                [DEBUG_ERROR, "#{args}"]
               when 'new_labels' then
                 [DEBUG_DEBUG, "Adding labels: #{args[0]} to issue #{args[1]}"]
               when 'progress' then
