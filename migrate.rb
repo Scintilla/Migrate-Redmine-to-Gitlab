@@ -1,9 +1,20 @@
 #!/usr/bin/env ruby
 
+require 'fileutils'
 require 'faraday'
 require 'json'
 require 'gitlab'
 require_relative 'config'
+
+NilClass.class_eval <<EOC
+def name
+  nil
+end
+
+def id
+  nil
+end
+EOC
 
 module Redmine
   def self.connection
@@ -27,6 +38,7 @@ module Redmine
     result = connection.get(path, attrs) do |req|
       req.headers['X-Redmine-API-Key'] = API_KEY
     end
+    return nil if result.status >= 400
     JSON.parse result.body
   end
 
@@ -43,6 +55,7 @@ module Redmine
 
     def self.list(options = {})
       list = Redmine.get "#{pluralized_resource_name}.json", options
+      return nil if list.nil?
 
       raise "did not find any #{pluralized_resource_name} in #{list.inspect}" if list[pluralized_resource_name].nil?
 
@@ -58,6 +71,7 @@ module Redmine
       return @find[id] if @find[id]
 
       response = Redmine.get "#{pluralized_resource_name}/#{id}.json", options
+      return nil if response.nil?
       obj = new
       obj.attributes = response[resource_name]
       @find[id] = obj
@@ -225,15 +239,16 @@ def convert_user(rm_user)
 end
 
 def check_label(title, gl_project_id, id = false, color = nil)
+  return if title.nil?
   label = Label.find_by_title(title)
   if label.nil?
     new_label = Label.new
     new_label.project_id = gl_project_id
-    new_label.title = title
+    new_label.title = title.gsub ',', ';'
     if color
       new_label.color = color
     end
-    new_label.save
+    new_label.save!
     if !id
       new_label.title
     else
@@ -250,7 +265,7 @@ def create_note(title, author, date, project, issue, system=true, event=false)
   new_note = Note.new
   new_note.note = title
   new_note.noteable_type = TARGET_TYPE
-  new_note.author_id = author
+  new_note.author_id = author || DEFAULT_ACCOUNT
   new_note.created_at = date
   new_note.updated_at = date
   new_note.project_id = project
@@ -290,7 +305,7 @@ rm_projects.each do |rm_p|
     gl_project = Project.find_by_name(rm_project.identifier)
   else
     rm_project = Redmine::Project.by_identifier(rm_p[0])
-    gl_project = Project.find_by_name(rm_p[1])
+    gl_project = Project.find_with_namespace(rm_p[1])
   end
 
   rm_issue_conv = {}
@@ -312,7 +327,7 @@ rm_projects.each do |rm_p|
         issue_offset += 1
 
         rm_user = issue.author
-        gl_user_id = convert_user(rm_user)
+        gl_user_id = convert_user(rm_user) || DEFAULT_ACCOUNT
 
         if OPEN_VALUES.include? issue.status['name']
           state = 'opened'
@@ -347,7 +362,7 @@ rm_projects.each do |rm_p|
 
         messenger('new_issue', new_issue.title)
         unless new_issue.save
-          messenger('issue_errors', [new_issue.errors.inspect])
+          messenger('issue_errors', new_issue.errors.inspect)
         end
 
         create_event(new_issue, gl_user_id, Event::CREATED, new_issue.created_at)
@@ -381,7 +396,7 @@ rm_projects.each do |rm_p|
       journals.each do |journal|
         redmine_text = ''
         if convert_user(journal['user']) == DEFAULT_ACCOUNT
-          redmine_text = "*#{journal['user']['name']} (Redmine)*/n/n"
+          redmine_text = "*#{journal['user']['name']} (Redmine)*\n\n"
         end
         if !journal['notes'].nil? && !journal['notes'].empty?
           note = journal['notes']
@@ -399,10 +414,10 @@ rm_projects.each do |rm_p|
           journal['details'].each do |detail|
             if detail['property'] == 'attr'
               if detail['name'] == 'status_id'
-                if detail['new_value']
+                unless detail['new_value'].nil? or detail['new_value'].empty?
                   new << check_label('Status: ' + Redmine::IssueStatus.find(detail['new_value']).name, gl_project_id, true)
                 end
-                if detail['old_value']
+                unless detail['old_value'].nil? or detail['old_value'].empty?
                   old << check_label('Status: ' + Redmine::IssueStatus.find(detail['old_value']).name, gl_project_id, true)
                 end
                 if CLOSED_VALUES.include? detail['new_value'] and OPEN_VALUES.include? detail['old_value']
@@ -411,14 +426,14 @@ rm_projects.each do |rm_p|
                   create_event(gl_issue, convert_user(journal['user']), Event::REOPENED, journal['created_on'])
                 end
               elsif detail['name'] == 'priority_id'
-                if detail['new_value']
+                unless detail['new_value'].nil? or detail['new_value'].empty?
                   new << check_label('Priority: ' + PRIORITIES[Integer(detail['new_value'])], gl_project_id, true)
                 end
-                if detail['old_value']
+                unless detail['old_value'].nil? or detail['old_value'].empty?
                   old << check_label('Priority: ' + PRIORITIES[Integer(detail['old_value'])], gl_project_id, true)
                 end
               elsif detail['name'] == 'assigned_to_id'
-                if detail['old_value']
+                unless detail['old_value'].nil? or detail['old_value'].empty?
                   if first_assignee
                     user = Redmine::User.find(detail['old_value'])
                     if convert_user(user) == DEFAULT_ACCOUNT
@@ -433,7 +448,7 @@ rm_projects.each do |rm_p|
                     create_note(feature, convert_user(journal['user']), journal['created_on'], gl_project_id, gl_issue.id)
                   end
                 end
-                if detail['new_value']
+                unless detail['new_value'].nil? or detail['new_value'].empty?
                   user = Redmine::User.find(detail['new_value'])
                   if convert_user(user) == DEFAULT_ACCOUNT
                     feature = "Reassigned to #{user.firstname} #{user.lastname} (Redmine)"
@@ -445,19 +460,20 @@ rm_projects.each do |rm_p|
                 end
                 first_assignee = false
               elsif detail['name'] == 'category_id'
-                if detail['new_value']
-                  new << check_label(Redmine::IssueCategory.find(detail['new_value']).name, gl_project_id, true, '#12AD2B')
+                unless detail['new_value'].nil? or detail['new_value'].empty?
+                  new << check_label(Redmine::IssueCategory.find(detail['new_value'].to_i).name, gl_project_id, true, '#12AD2B')
                 end
-                if detail['old_value']
-                  old << check_label(Redmine::IssueCategory.find(detail['old_value']).name, gl_project_id, true, '#12AD2B')
+                unless detail['old_value'].nil? or detail['old_value'].empty?
+		  ic = Redmine::IssueCategory.find(detail['old_value'].to_i)
+                  old << check_label(ic.name, gl_project_id, true, '#12AD2B') unless ic.nil? or ic.name.empty?
                 end
               elsif detail['name'] == 'tracker_id'
                 tracker_changed = true
-                if detail['new_value']
-                  new << check_label(Redmine::Tracker.find(detail['new_value']).name, gl_project_id, true)
+                unless detail['new_value'].nil? or detail['new_value'].empty?
+                  new << check_label(Redmine::Tracker.find(detail['new_value'].to_i).name, gl_project_id, true)
                 end
-                if detail['old_value']
-                  old << check_label(Redmine::Tracker.find(detail['old_value']).name, gl_project_id, true)
+                unless detail['old_value'].nil? or detail['old_value'].empty?
+                  old << check_label(Redmine::Tracker.find(detail['old_value'].to_i).name, gl_project_id, true)
                 end
               elsif detail['name'] == 'parent_id'
                 parent_changed = true
@@ -479,10 +495,10 @@ rm_projects.each do |rm_p|
                 messenger('journal_not_found', [detail['name']])
               end
             elsif CUSTOM_FEATURES.include? Integer(detail['name'])
-              if detail['new_value']
+              unless detail['new_value'].nil? or detail['new_value'].empty?
                 new << check_label(detail['new_value'], gl_project_id, true)
               end
-              if detail['old_value']
+              unless detail['old_value'].nil? or detail['old_value'].empty?
                 old << check_label(detail['old_value'], gl_project_id, true)
               end
             else
@@ -490,6 +506,8 @@ rm_projects.each do |rm_p|
             end
           end
 
+	  old.compact!
+	  new.compact!
           if !old.empty? or !new.empty?
             if not old.empty?
               if not new.empty?
@@ -567,41 +585,31 @@ rm_projects.each do |rm_p|
 
       attachments = rm_issue.ls_attachments
       if attachments
+	cfg = Gitlab.config.gitlab
+	project_path = gl_project.path_with_namespace
+	upload_path = File.join(UPLOADS_PATH, project_path, HASH)
+	FileUtils.mkdir_p(upload_path)
+
         attachments.each do |attachment|
           uri = URI.parse(attachment['content_url'])
-          filename = File.basename(uri.path)
-          local_path = '/var/opt/gitlab/gitlab-rails/uploads/'
-          project_path = User.find(gl_project.creator_id).name.downcase+'/'+gl_project.path
-          IO.copy_stream(open('https://dev.snt.utwente.nl'+uri.path+'?key='+API_KEY), local_path+project_path+'/'+HASH+'/'+filename)
-          filename.gsub! '%20', '_'
-          url = 'http://' + Gitlab.config.gitlab.host + ':' + Gitlab.config.gitlab.port.to_s + '/' + project_path + "/uploads/#{HASH}/"+ filename
+          filename = File.basename(uri.path).gsub '%20', '_'
+          IO.copy_stream(open("#{attachment['content_url']}?key=#{API_KEY}"), File.join(upload_path, filename))
+          url = "http#{'s' if cfg.https}://#{cfg.host}#{":#{cfg.port}" unless cfg.https and cfg.port == 443 or cfg.port == 80}/#{project_path}/uploads/#{HASH}/#{filename}"
           redmine_text = ''
           if convert_user(attachment['author']) == DEFAULT_ACCOUNT
-            redmine_text = "*#{attachment['author']['name']} (Redmine)*/n/n"
+            redmine_text = "*#{attachment['author']['name']} (Redmine)*\n\n"
           end
           create_note("#{redmine_text}[#{filename}](#{url})", convert_user(attachment['author']), attachment['created_on'], gl_project_id, gl_issue.id, true, true)
         end
       end
 
-      relations = rm_issue.ls_relations
-      if relations
-        description = gl_issue.description || ''
-        description += "\n\n#### Related issues"
-        description += "\n|    id    |   title  |   state  |"
-        description += "\n| -------- | -------- | -------- |"
-        relations.each do |relation|
-          rel_gl_issue = Issue.find(rm_issue_conv[Integer(relation['issue_id'])].id)
-          description += "\n| ##{rel_gl_issue.iid} | #{rel_gl_issue.title} | #{rel_gl_issue.state} |"
-          gl_issue.description = description
-        end
-      end
 
       changesets = rm_issue.ls_changesets
       if changesets
         changesets.each do |changeset|
           redmine_text = ''
           if convert_user(changeset['user']) == DEFAULT_ACCOUNT
-            redmine_text = "*#{changeset['user']['name']} (Redmine)*/n/n"
+            redmine_text = "*#{changeset['user']['name']} (Redmine)*\n\n"
           end
           string = "#{redmine_text}mentioned in commit #{changeset['revision']}"
           create_note(string, convert_user(changeset['user']), changeset['committed_on'], gl_project_id, gl_issue.id)
@@ -611,7 +619,24 @@ rm_projects.each do |rm_p|
       gl_issue.updated_at = rm_issue.updated_on
 
       unless gl_issue.save
-        messenger('issue_errors', [gl_issue.errors.inspect])
+        messenger('issue_errors', gl_issue.errors.inspect)
+      end
+    end
+
+    rm_issue_conv.each do |rm_issue_id, gl_issue|
+      rm_issue = Redmine::Issue.find(rm_issue_id)
+      relations = rm_issue.ls_relations
+      if relations
+        description = gl_issue.description || ''
+        description += "\n\n#### Related issues"
+        description += "\n|    id    |   title  |   state  |"
+        description += "\n| -------- | -------- | -------- |"
+        relations.each do |relation|
+          description += "\n| ##{gl_issue.iid} | #{gl_issue.title} | #{gl_issue.state} |"
+          gl_issue.description = description
+        end
+
+	messenger('issue_errors', gl_issue.errors.inspect) unless gl_issue.save
       end
     end
     messenger('progress', ["--- #{rm_project.identifier} done"])
