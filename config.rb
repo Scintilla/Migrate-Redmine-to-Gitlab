@@ -2,6 +2,8 @@
 HOST = 'https://host/redmine/'
 API_KEY = 'someapikey'
 
+COPY_ISSUE_IDS = false
+
 # User conversion from Redmine => Gitlab, e.g. {15 => 1, 19 => 2}
 USER_CONVERSION = {}
 DEFAULT_ACCOUNT = 1
