@@ -1,3 +1,6 @@
+require 'faraday'
+require 'json'
+
 module Redmine
   def self.connection
     raise 'must define a Host' if HOST.nil?

@@ -2,11 +2,12 @@
 HOST = 'https://host/redmine/'
 API_KEY = 'someapikey'
 
-COPY_ISSUE_IDS = false
-
 # User conversion from Redmine => Gitlab, e.g. {15 => 1, 19 => 2}
 USER_CONVERSION = {}
 DEFAULT_ACCOUNT = 1
+
+PROJECT_CONVERSION = {'example' => 'my_namespace/my_project'}
+COPY_ISSUE_ID_FIELD = nil # e.g. :project_issue_id
 
 # Custom features in Redmine (id)
 CUSTOM_FEATURES = []

@@ -1,11 +1,9 @@
 #!/usr/bin/env ruby
 
 require 'fileutils'
-require 'faraday'
-require 'json'
 require 'gitlab'
-require_relative 'config'
 require_relative 'redmine'
+require_relative 'config'
 
 NilClass.class_eval <<EOC
 def name
@@ -140,7 +138,7 @@ rm_projects.each do |rm_p|
         issue.inspect
         new_issue = Issue.new
         new_issue.title = issue.subject
-        new_issue.iid = issue.id if COPY_ISSUE_IDS
+        new_issue.iid = issue.send(COPY_ISSUE_ID_FIELD) unless COPY_ISSUE_ID_FIELD.nil?
         new_issue.state = state
 
         new_issue.author_id = gl_user_id
